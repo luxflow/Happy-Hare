@@ -103,3 +103,55 @@ whichever tag the chip reports. This is a *different* gap from the
 crosstalk problem below (this is one chip genuinely shared by two gates by
 config; crosstalk is two *separate* chips picking up each other's field) —
 see [noisy-neighbour-unmerged.md](noisy-neighbour-unmerged.md).
+
+## 4. Fixed bug: `Kconfig.vvd` hardcoded `unit1_nfc01/23` (not templated)
+
+`"MMU NFC reader section [mmu_nfc_reader NAME] not found!"` is raised from
+two call sites — `mmu_unit.py:238` (validated at config-load time, over
+every name in `nfc_reader` + `nfc_readers`) and `mmu_nfc_manager.py:167`
+(same check again at reader-lookup time). Both just mean: some name in
+`nfc_reader`/`nfc_readers` has no matching `[mmu_nfc_reader NAME]` section
+anywhere in the merged config — a name/section mismatch, not a missing
+feature.
+
+**Root cause found and fixed 2026-09-18** in
+`installer/boards/custom/Kconfig.vvd` (the BTT ViViD board preset). Its
+`PARAM_MISC_HARDWARE` default is a hand-written config block (used because
+`config/base/mmu_hardware.cfg`'s auto-generated `[mmu_nfc_reader ...]`
+sections are gated off by `CUSTOM_NFC_READER_SETUP`, which this board turns
+on to hand-wire its two `rc522`s on a shared SPI bus, `installer/Kconfig.
+capabilities:113`). Every other line in that block correctly uses the
+`$(UNIT_NAME)` macro (`neopixel $(UNIT_NAME)_leds_1`, `heater_generic
+$(UNIT_NAME)_heater`, …) — but the two `[mmu_nfc_reader ...]` section
+headers had the literal string `unit1_nfc01`/`unit1_nfc23` hardcoded
+instead of `$(UNIT_NAME)_nfc01`/`$(UNIT_NAME)_nfc23` (was
+`Kconfig.vvd:120,128`). Meanwhile the *names* referencing those sections —
+`PARAM_NFC_READER_0..3` in `installer/mmu_types/Kconfig.vvd:133-140` —
+correctly derive from `$(UNIT_NAME)_nfc01`/`_nfc23`. So for any printer
+where ViViD is `unit0`, the reader names resolved to `unit0_nfc01/23` while
+the hand-written sections stayed `unit1_nfc01/23` — guaranteed mismatch,
+100% reproducible, nothing to do with the user's own config.
+
+**Why it shipped unnoticed:** the only test profile exercising this board,
+`ERCF_VVD` (`test/hh/profiles.py:536-625`), is "a transcription of a real
+machine" where ViViD genuinely *is* `unit1` (paired with ERCF as `unit0`,
+`test/hh/profiles.py:492-497`). `$(UNIT_NAME)` resolves to `"unit1"` there,
+so the hardcoded literal happened to match by coincidence and every
+existing assertion (`test_mmu_nfc.py:392-395`,
+`test_mmu_profiles.py:676`) passed either way. **No test profile installs
+ViViD as a standalone/first unit (`unit0`)** — that's the untested
+configuration the bug actually lived in. If you add one, expect
+`nfc_readers` to read `unit0_nfc01, unit0_nfc01, unit0_nfc23, unit0_nfc23`
+and the `[mmu_nfc_reader ...]` section names to now match it post-fix.
+
+**The fix**: `Kconfig.vvd:120,128` now read `[mmu_nfc_reader
+$(UNIT_NAME)_nfc01]` / `$(UNIT_NAME)_nfc23]`, matching every other line in
+the block. Verified with `make UT='test_mmu_nfc*.py' test` and `make
+UT='test_mmu_profiles.py' test` (both pass unchanged, since `$(UNIT_NAME)`
+still resolves to `unit1` for the one profile that exercises this board).
+
+When debugging this error in general (not just on ViViD), always diff the
+*resolved* `nfc_reader`/`nfc_readers` value against the actual
+`[mmu_nfc_reader NAME]` section names in the merged config — that's where a
+divergence like this actually lives, whether it's a template bug or a
+user's hand-edited `CUSTOM_NFC_READER_SETUP` block drifting out of sync.

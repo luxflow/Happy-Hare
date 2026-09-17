@@ -59,6 +59,18 @@ the two paired gates today — the manager trusts whatever the chip reports.
 That gap is exactly what the unmerged crosstalk design addresses, for the
 different (separate-reader) case — see the reference doc.
 
+**`"MMU NFC reader section [...] not found!"`** almost always means a
+name/section mismatch, not a missing feature. §4 of the reference doc
+documents a real, now-fixed instance: `installer/boards/custom/Kconfig.vvd`
+hardcoded `unit1_nfc01`/`unit1_nfc23` in its `PARAM_MISC_HARDWARE` default
+instead of using the `$(UNIT_NAME)` macro like every surrounding line —
+guaranteed to break for any printer running ViViD as `unit0` (the shipped
+test profile only ever installs ViViD as `unit1`, which is why it went
+unnoticed). Fixed 2026-09-18. If this error resurfaces elsewhere, the same
+diagnostic applies: diff the resolved `nfc_reader`/`nfc_readers` names
+against the actual `[mmu_nfc_reader NAME]` section names in the merged
+config.
+
 Full file:line citations for all of the above are in
 [references/driver-architecture.md](references/driver-architecture.md).
 
