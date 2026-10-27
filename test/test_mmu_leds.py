@@ -54,6 +54,15 @@ LEDS_UNEVEN = LEDS_LINES_ONLY.derive(
         'PARAM_ENTRY_LED_COUNTS': '1, 1, 1, 1, 1',
     })
 
+# menuconfig's 'Enable LEDs?' / 'Enable animation?' answered no - renders 'enabled : False'
+# and 'animation : False' into [mmu_leds unit0].
+LEDS_DISABLED = profiles.BOXTURTLE.derive(
+    'leds_disabled',
+    syms={
+        'BOOL_ENABLE_LEDS': False,
+        'BOOL_ENABLE_LEDS_ANIMATION': False,
+    })
+
 
 class LedTestCase(unittest.TestCase):
     PROFILE = 'boxturtle'
@@ -328,6 +337,60 @@ class TestLedCountCompatibility(unittest.TestCase):
                         hh.boot()
                 finally:
                     hh.close()
+
+
+class TestDisabledAtStartup(unittest.TestCase):
+    """
+    'enabled: False' must keep every LED off from boot until MMU_LED ENABLE=1, and
+    'animation: False' must select the static path.
+
+    Both used to be read with config.get(), which returns the raw string - and 'False' is
+    truthy - so both options were silently ignored: the rainbow ran at boot, the default
+    effects were painted, and MMU_LED without ENABLE= switched the LEDs on, because that
+    same string was the default for its ENABLE parameter.
+    """
+
+    def setUp(self):
+        self.hh = session(LEDS_DISABLED)
+        self.addCleanup(self.hh.close)
+        self.hh.boot()
+        self.assertEqual(self.hh.errors, [], 'bootup was not clean')
+        self.leds = self.hh.mmu.mmu_unit(0).leds
+
+    def colors(self):
+        return self.leds.virtual_chains['exit'].get_status()['color_data']
+
+    def dark(self):
+        return [(0., 0., 0., 0.)] * len(self.colors())
+
+    def test_options_are_parsed_as_booleans(self):
+        self.assertIs(self.leds.enabled, False)
+        self.assertIs(self.leds.animation, False)
+        self.assertIs(self.leds.get_status()['enabled'], False)
+
+    def test_the_leds_stay_off_through_bootup(self):
+        """1s in is inside effect_initialized's 8s rainbow - the one that used to light up."""
+        self.hh.reactor.advance(1.0)
+        self.assertEqual(self.colors(), self.dark())
+        self.hh.reactor.advance(WARMUP)
+        self.assertEqual(self.colors(), self.dark())
+        self.assertIsNone(self.hh.mmu.led_manager.effect_state.get(0),
+                          'a default effect was painted on a disabled unit')
+
+    def test_mmu_led_without_enable_keeps_them_off(self):
+        self.hh.reactor.advance(WARMUP)
+        self.hh.run_gcode('MMU_LED EXIT_EFFECT=1,1,1 QUIET=1')
+        self.hh.reactor.advance(1.0)
+        self.assertIs(self.leds.enabled, False)
+        self.assertEqual(self.colors(), self.dark())
+
+    def test_mmu_led_enable_still_turns_them_on(self):
+        """Disabled at startup is not disabled for good - MMU_LED ENABLE=1 takes over."""
+        self.hh.reactor.advance(WARMUP)
+        self.hh.run_gcode('MMU_LED ENABLE=1 EXIT_EFFECT=1,1,1 QUIET=1')
+        self.hh.reactor.advance(1.0)
+        self.assertIs(self.leds.enabled, True)
+        self.assertEqual(self.colors(), [(1., 1., 1., 0.)] * len(self.colors()))
 
 
 class TestEffectConfiguration(LedTestCase):
